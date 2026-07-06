@@ -119,7 +119,28 @@ wx_server_url="http://服务器IP:8110"
 WX_SERVER_URL="http://服务器IP:8110"
 ```
 
-## 二、CodeScript 脚本列表
+
+## 二、青龙拉库命令
+
+在青龙面板「订阅管理」中添加订阅，或在容器终端执行：
+
+```bash
+ql repo https://github.com/Qcby/QcbyScript.git "" "" "" "main"
+```
+
+只拉取 `CodeScript` 目录可使用：
+
+```bash
+ql repo https://github.com/Qcby/QcbyScript.git "CodeScript" "" "" "main"
+```
+
+只拉取 `RegularScript` 目录可使用：
+
+```bash
+ql repo https://github.com/Qcby/QcbyScript.git "RegularScript" "" "" "main"
+```
+
+## 三、CodeScript 脚本列表
 
 | 脚本 | 功能 | AppID | 账号变量 | 青龙命令 |
 |---|---|---|---|---|
@@ -149,7 +170,7 @@ pdd_wxid="wxid_a&wxid_b"
 txdt_wxid="wxid_a,wxid_b"
 ```
 
-## 三、推送说明
+## 四、推送说明
 
 ### Python 脚本
 
@@ -178,7 +199,7 @@ JS 脚本内置企业微信机器人聚合推送，推荐配置：
 QYWX_KEY="企业微信机器人key"
 ```
 
-## 四、Code 服务常用命令
+## 五、Code 服务常用命令
 
 ```bash
 # 查看容器
@@ -208,3 +229,4 @@ docker exec qcby-vxcode sh -c 'rm -f /app/data/admin_auth.json' && docker restar
 Code 服务安装说明来自 Docker Hub：
 
 [https://hub.docker.com/r/qcby/qcby-vxcode](https://hub.docker.com/r/qcby/qcby-vxcode)
+
