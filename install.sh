@@ -6,7 +6,7 @@
 #   bash install.sh install [端口] [版本]
 #   bash install.sh update  [端口] [版本]
 #   bash install.sh uninstall [--purge]
-#   bash install.sh status|logs|restart|reset-password|help
+#   bash install.sh status|address|logs|restart|reset-password|help
 #
 # 管道：
 #   curl -fsSL http://l.qcby.cc/Code | bash                         # 打开交互菜单
@@ -90,6 +90,7 @@ usage() {
   $SCRIPT_NAME upgrade [端口] [版本]       update 的别名
   $SCRIPT_NAME uninstall [--purge]         卸载容器；加 --purge 同时删除数据卷
   $SCRIPT_NAME status                      查看容器状态
+  $SCRIPT_NAME address                    查看访问地址和后台管理地址
   $SCRIPT_NAME logs [app|redis]            查看日志，默认 app
   $SCRIPT_NAME restart [app|redis|all]     重启服务，默认 all
   $SCRIPT_NAME reset-password              删除后台鉴权文件并重启，重新初始化管理员
@@ -161,6 +162,7 @@ parse_action() {
     update|upgrade|2) ACTION="update"; shift || true ;;
     uninstall|remove|3) ACTION="uninstall"; shift || true ;;
     status|ps) ACTION="status"; shift || true ;;
+    address|url|admin|addr) ACTION="address"; shift || true ;;
     logs|log) ACTION="logs"; shift || true ;;
     restart) ACTION="restart"; shift || true ;;
     reset-password|reset_password|reset) ACTION="reset-password"; shift || true ;;
@@ -174,7 +176,9 @@ parse_action() {
         echo "  4) 查看状态"
         echo "  5) 查看日志"
         echo "  6) 重置后台密码"
-        printf "输入数字 [1-6]: "
+        echo "  7) 查看管理地址"
+        echo "  8) 退出脚本"
+        printf "输入数字 [1-8]: "
         prompt_read choice
         case "$choice" in
           1) ACTION="install" ;;
@@ -183,6 +187,8 @@ parse_action() {
           4) ACTION="status" ;;
           5) ACTION="logs" ;;
           6) ACTION="reset-password" ;;
+          7) ACTION="address" ;;
+          8) echo "已退出脚本。"; exit 0 ;;
           *) err "无效选择。"; exit 1 ;;
         esac
       else
@@ -695,6 +701,40 @@ status_app() {
   run_docker network ls --filter "name=$NETWORK_NAME"
 }
 
+show_address() {
+  # 只查看已安装服务，不自动安装 Docker。
+  if ! select_docker_prefix; then
+    err "未检测到可用 Docker，无法读取已安装服务地址。"
+    echo "如果尚未安装，请先选择 1) 安装。"
+    exit 1
+  fi
+
+  if ! container_exists "$APP_NAME"; then
+    err "未检测到已安装的业务容器：$APP_NAME"
+    echo "如果尚未安装，请先选择 1) 安装。"
+    exit 1
+  fi
+
+  local port=""
+  port="$(run_docker inspect --format='{{(index (index .NetworkSettings.Ports "8110/tcp") 0).HostPort}}' "$APP_NAME" 2>/dev/null || true)"
+  if [ -z "$port" ] || [ "$port" = "<no value>" ]; then
+    port="$DEFAULT_HOST_PORT"
+    warn "未能从容器读取端口映射，使用默认端口 $port 显示。"
+  fi
+
+  local ip
+  ip="$(get_public_ip)"
+  echo ""
+  echo "======================================"
+  green "✅ 管理地址"
+  echo "访问地址：http://$ip:$port/"
+  echo "后台地址：http://$ip:$port/admin/"
+  echo "如果你已经设置过安全码，请使用：http://$ip:$port/admin/你的安全码"
+  echo "容器状态："
+  run_docker ps --filter "name=$APP_NAME"
+  echo "======================================"
+}
+
 logs_app() {
   ensure_docker
   local target="${REMAINING_ARGS[0]:-app}"
@@ -738,6 +778,7 @@ main() {
     update) update_app ;;
     uninstall) uninstall_app ;;
     status) status_app ;;
+    address) show_address ;;
     logs) logs_app ;;
     restart) restart_app ;;
     reset-password) reset_password ;;
