@@ -270,6 +270,100 @@ start_docker_service() {
   fi
 }
 
+run_root() {
+  if is_root; then
+    "$@"
+  elif have sudo; then
+    sudo "$@"
+  else
+    return 127
+  fi
+}
+
+install_docker_with_script_url() {
+  local url="$1"
+  local tmp=""
+  if ! have curl; then
+    return 1
+  fi
+  tmp="$(mktemp)"
+  info "尝试通过安装脚本安装 Docker：$url"
+  if ! curl -fsSL --connect-timeout 15 --retry 2 --retry-delay 2 "$url" -o "$tmp"; then
+    rm -f "$tmp"
+    warn "下载安装脚本失败：$url"
+    return 1
+  fi
+  if run_root sh "$tmp"; then
+    rm -f "$tmp"
+    return 0
+  fi
+  rm -f "$tmp"
+  warn "安装脚本执行失败：$url"
+  return 1
+}
+
+install_docker_with_get_script() {
+  local urls=()
+  local url=""
+  [ -n "${DOCKER_INSTALL_URL:-}" ] && urls+=("$DOCKER_INSTALL_URL")
+  urls+=(
+    "https://get.docker.com"
+    "https://raw.githubusercontent.com/docker/docker-install/master/install.sh"
+    "https://cdn.jsdelivr.net/gh/docker/docker-install@master/install.sh"
+  )
+  for url in "${urls[@]}"; do
+    install_docker_with_script_url "$url" && return 0
+  done
+  return 1
+}
+
+install_docker_with_package_manager() {
+  if ! (is_root || have sudo); then
+    return 1
+  fi
+
+  if have apt-get; then
+    info "尝试通过 apt 安装 Docker（docker.io）。"
+    run_root apt-get update || return 1
+    run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y docker.io ca-certificates curl || return 1
+    return 0
+  fi
+
+  if have dnf; then
+    info "尝试通过 dnf 安装 Docker。"
+    run_root dnf install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin && return 0
+    run_root dnf install -y moby-engine docker-cli containerd || return 1
+    return 0
+  fi
+
+  if have yum; then
+    info "尝试通过 yum 安装 Docker。"
+    run_root yum install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin && return 0
+    run_root yum install -y docker || return 1
+    return 0
+  fi
+
+  if have apk; then
+    info "尝试通过 apk 安装 Docker。"
+    run_root apk add --no-cache docker docker-cli containerd || return 1
+    return 0
+  fi
+
+  if have pacman; then
+    info "尝试通过 pacman 安装 Docker。"
+    run_root pacman -Sy --noconfirm docker || return 1
+    return 0
+  fi
+
+  if have zypper; then
+    info "尝试通过 zypper 安装 Docker。"
+    run_root zypper --non-interactive install docker || return 1
+    return 0
+  fi
+
+  return 1
+}
+
 ensure_docker() {
   if select_docker_prefix; then
     info "Docker 已就绪。"
@@ -279,11 +373,7 @@ ensure_docker() {
   if have docker; then
     warn "Docker 已安装但当前用户无法访问或 Docker daemon 未启动，尝试启动服务。"
     if is_root || have sudo; then
-      if is_root; then
-        start_docker_service
-      else
-        sudo -n true >/dev/null 2>&1 && sudo systemctl start docker >/dev/null 2>&1 || true
-      fi
+      start_docker_service
     fi
     if select_docker_prefix; then
       info "Docker 已启动。"
@@ -297,39 +387,52 @@ ensure_docker() {
     err "Docker 未安装，且 NO_AUTO_INSTALL_DOCKER=1。"
     exit 1
   fi
-  if ! have curl; then
-    err "Docker 未安装，且系统缺少 curl，无法自动安装。"
+
+  if ! (is_root || have sudo); then
+    err "Docker 未安装；当前不是 root 且没有 sudo，无法自动安装。"
     exit 1
   fi
 
-  warn "Docker 未安装，准备通过 get.docker.com 自动安装。"
-  if is_root; then
-    curl -fsSL https://get.docker.com | sh
-    start_docker_service
-  elif have sudo; then
-    curl -fsSL https://get.docker.com | sudo sh
-    sudo systemctl enable docker >/dev/null 2>&1 || true
-    sudo systemctl start docker >/dev/null 2>&1 || true
+  warn "Docker 未安装，开始自动安装。"
+  warn "若 get.docker.com 在当前网络不可达，脚本会自动尝试 GitHub/jsDelivr 安装脚本和系统包管理器。"
+
+  if install_docker_with_get_script; then
+    info "Docker 安装脚本执行完成。"
   else
-    err "当前不是 root 且没有 sudo，无法自动安装 Docker。"
-    exit 1
+    warn "所有 Docker 官方安装脚本下载或执行失败，改用系统包管理器兜底安装。"
+    if ! install_docker_with_package_manager; then
+      err "Docker 自动安装失败。可手动执行：apt-get update && apt-get install -y docker.io"
+      exit 1
+    fi
+  fi
+
+  start_docker_service
+  sleep 2
+
+  if ! select_docker_prefix; then
+    # 部分系统第一次启动较慢，再尝试一次。
+    start_docker_service
+    sleep 3
   fi
 
   if ! select_docker_prefix; then
-    err "Docker 安装后仍不可用，请手动检查 Docker 服务。"
+    err "Docker 安装后仍不可用，请手动检查 Docker 服务：systemctl status docker 或 service docker status"
     exit 1
   fi
-  green "Docker 安装完成。"
+  green "Docker 安装完成并已启动。"
 }
 
 configure_docker_mirror() {
   local use_mirror="${USE_MIRROR:-}"
   if [ -z "$use_mirror" ] && is_tty; then
-    printf "是否配置 Docker registry mirror：%s？默认 n [y/N]: " "$MIRROR_URL"
+    printf "是否配置 Docker registry mirror：%s？默认 y [Y/n]: " "$MIRROR_URL"
     read -r answer
-    case "$answer" in y|Y|yes|YES) use_mirror=1 ;; *) use_mirror=0 ;; esac
+    case "$answer" in n|N|no|NO) use_mirror=0 ;; *) use_mirror=1 ;; esac
+  elif [ -z "$use_mirror" ]; then
+    use_mirror=1
+    info "非交互环境，默认配置 Docker registry mirror：$MIRROR_URL。可用 USE_MIRROR=0 关闭。"
   fi
-  use_mirror="${use_mirror:-0}"
+  use_mirror="${use_mirror:-1}"
 
   if [ "$use_mirror" != "1" ]; then
     info "未修改 Docker registry mirror。需要时可用 USE_MIRROR=1 启用。"
