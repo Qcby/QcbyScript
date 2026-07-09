@@ -9,9 +9,9 @@
 #   bash install.sh status|address|logs|restart|reset-password|help
 #
 # 管道：
-#   curl -fsSL http://l.qcby.cc/Code | bash                         # 打开交互菜单
-#   curl -fsSL http://l.qcby.cc/Code | bash -s -- install 8110 latest # 明确指定安装
-#   curl -fsSL http://l.qcby.cc/Code | bash -s -- update 8110 1.0.4
+#   curl -fsSL https://cdn.jsdelivr.net/gh/Qcby/QcbyScript@code/install.sh | bash                         # 打开交互菜单
+#   curl -fsSL https://cdn.jsdelivr.net/gh/Qcby/QcbyScript@code/install.sh | bash -s -- install 8110 latest # 明确指定安装
+#   curl -fsSL https://cdn.jsdelivr.net/gh/Qcby/QcbyScript@code/install.sh | bash -s -- update 8110 1.0.4
 #
 # 环境变量：
 #   IMAGE_TAG=latest         指定镜像版本
@@ -38,7 +38,7 @@ DEFAULT_HOST_PORT="8110"
 DEFAULT_IMAGE_TAG="${IMAGE_TAG:-latest}"
 MIRROR_URL="${MIRROR_URL:-https://docker.1ms.run}"
 PROJECT_URL="https://hub.docker.com/r/qcby/qcby-vxcode"
-SCRIPT_URL="http://l.qcby.cc/Code"
+SCRIPT_URL="https://cdn.jsdelivr.net/gh/Qcby/QcbyScript@code/install.sh"
 ADMIN_AUTH_FILE="/app/data/admin_auth.json"
 # ==================================================
 
