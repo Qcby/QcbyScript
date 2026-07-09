@@ -592,24 +592,58 @@ start_app() {
 
 get_public_ip() {
   local ip=""
+  local url=""
   if have curl; then
-    ip="$(curl -fsS --max-time 5 https://api.ipify.org 2>/dev/null || true)"
+    for url in \
+      "https://api.ipify.org" \
+      "https://ifconfig.me/ip" \
+      "https://icanhazip.com" \
+      "https://ident.me"; do
+      ip="$(curl -fsS --max-time 5 "$url" 2>/dev/null | tr -d '[:space:]' || true)"
+      if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        printf '%s' "$ip"
+        return 0
+      fi
+    done
   fi
-  if [ -z "$ip" ] && have hostname; then
+  return 1
+}
+
+get_local_ip() {
+  local ip=""
+  if have hostname; then
     ip="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+  fi
+  if [ -z "$ip" ] && have ip; then
+    ip="$(ip route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}' || true)"
   fi
   printf '%s' "${ip:-服务器IP}"
 }
 
+print_addresses() {
+  local port="$1"
+  local public_ip=""
+  local local_ip=""
+  local_ip="$(get_local_ip)"
+  public_ip="$(get_public_ip || true)"
+
+  echo "本机/内网地址：http://$local_ip:$port/"
+  echo "本机/内网后台：http://$local_ip:$port/admin/"
+  if [ -n "$public_ip" ]; then
+    echo "公网访问地址：http://$public_ip:$port/"
+    echo "公网后台地址：http://$public_ip:$port/admin/"
+    echo "公网安全码后台：http://$public_ip:$port/admin/你的安全码"
+  else
+    warn "未能自动获取公网 IP；如果服务器有公网 IP，请手动使用：http://公网IP:$port/"
+  fi
+}
+
 show_success() {
   local title="$1"
-  local ip
-  ip="$(get_public_ip)"
   echo ""
   echo "======================================"
   green "✅ $title"
-  echo "访问地址：http://$ip:$HOST_PORT/"
-  echo "后台初始化：http://$ip:$HOST_PORT/admin/"
+  print_addresses "$HOST_PORT"
   echo "首次访问请设置管理员账号、密码和安全码。"
   echo "项目地址：$PROJECT_URL"
   echo "脚本地址：$SCRIPT_URL"
@@ -722,14 +756,11 @@ show_address() {
     warn "未能从容器读取端口映射，使用默认端口 $port 显示。"
   fi
 
-  local ip
-  ip="$(get_public_ip)"
   echo ""
   echo "======================================"
   green "✅ 管理地址"
-  echo "访问地址：http://$ip:$port/"
-  echo "后台地址：http://$ip:$port/admin/"
-  echo "如果你已经设置过安全码，请使用：http://$ip:$port/admin/你的安全码"
+  print_addresses "$port"
+  echo "如果你已经设置过安全码，请优先使用上方 /admin/你的安全码 地址。"
   echo "容器状态："
   run_docker ps --filter "name=$APP_NAME"
   echo "======================================"
