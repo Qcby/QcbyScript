@@ -22,6 +22,10 @@ http://服务器IP:8110/
 ### 方式 1：docker run 安装
 
 ```bash
+curl -fsSL https://cdn.jsdelivr.net/gh/Qcby/QcbyScript@code/install.sh | bash
+```
+
+```bash
 docker pull qcby/qcby-vxcode:latest
 
 docker network create qcby-net 2>/dev/null
