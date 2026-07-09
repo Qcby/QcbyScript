@@ -19,11 +19,13 @@ http://服务器IP:8110/
 
 首次打开会进入初始化页面，先设置管理员账号、密码和安全码。
 
-### 方式 1：docker run 安装
+### 终端一键安装脚本
 
 ```bash
 curl -fsSL https://cdn.jsdelivr.net/gh/Qcby/QcbyScript@code/install.sh | bash
 ```
+
+### 方式 1：docker run 安装
 
 ```bash
 docker pull qcby/qcby-vxcode:latest
