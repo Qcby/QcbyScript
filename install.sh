@@ -9,8 +9,8 @@
 #   bash install.sh status|logs|restart|reset-password|help
 #
 # 管道：
-#   curl -fsSL http://l.qcby.cc/Code | bash
-#   curl -fsSL http://l.qcby.cc/Code | bash -s -- install 8110 latest
+#   curl -fsSL http://l.qcby.cc/Code | bash                         # 打开交互菜单
+#   curl -fsSL http://l.qcby.cc/Code | bash -s -- install 8110 latest # 明确指定安装
 #   curl -fsSL http://l.qcby.cc/Code | bash -s -- update 8110 1.0.4
 #
 # 环境变量：
@@ -55,9 +55,23 @@ info() { blue "[信息] $*"; }
 warn() { yellow "[提示] $*"; }
 err() { red "[错误] $*" >&2; }
 
-is_tty() { [ -t 0 ] && [ -t 1 ]; }
+# curl ... | bash 时 stdin 被管道占用，但终端通常仍可通过 /dev/tty 交互。
+# 所以交互判断不能只看 stdin，避免用户一执行命令就直接自动安装 Docker。
+can_prompt() { [ -t 1 ] && [ -r /dev/tty ]; }
+is_tty() { can_prompt; }
 is_root() { [ "${EUID:-$(id -u)}" -eq 0 ]; }
 have() { command -v "$1" >/dev/null 2>&1; }
+
+prompt_read() {
+  # 用法：prompt_read var_name
+  # 在管道执行脚本时从 /dev/tty 读取用户输入；无 TTY 时回退到 stdin。
+  local __var="$1"
+  if [ -r /dev/tty ]; then
+    IFS= read -r "$__var" </dev/tty
+  else
+    IFS= read -r "$__var"
+  fi
+}
 
 run_docker() {
   "${DOCKER_PREFIX[@]}" "$DOCKER_BIN" "$@"
@@ -81,9 +95,9 @@ usage() {
   $SCRIPT_NAME reset-password              删除后台鉴权文件并重启，重新初始化管理员
   $SCRIPT_NAME help                        显示帮助
 
-GitHub 一键命令：
-  curl -fsSL $SCRIPT_URL | bash
-  curl -fsSL $SCRIPT_URL | bash -s -- install 8110 latest
+一键命令：
+  curl -fsSL $SCRIPT_URL | bash                         # 打开交互菜单
+  curl -fsSL $SCRIPT_URL | bash -s -- install 8110 latest # 明确指定安装
   curl -fsSL $SCRIPT_URL | bash -s -- update 8110 1.0.4
 
 示例：
@@ -118,13 +132,13 @@ confirm_notice() {
   fi
   if is_tty; then
     printf "请输入 y 确认已阅读并继续，其他任意输入退出 [y/N]: "
-    read -r answer
+    prompt_read answer
     case "$answer" in
       y|Y|yes|YES) return 0 ;;
       *) err "已取消。"; exit 1 ;;
     esac
   else
-    warn "非交互环境，已展示使用须知；继续执行即代表同意。"
+    warn "未检测到可交互终端，已展示使用须知；继续执行即代表同意。"
   fi
 }
 
@@ -161,7 +175,7 @@ parse_action() {
         echo "  5) 查看日志"
         echo "  6) 重置后台密码"
         printf "输入数字 [1-6]: "
-        read -r choice
+        prompt_read choice
         case "$choice" in
           1) ACTION="install" ;;
           2) ACTION="update" ;;
@@ -173,7 +187,7 @@ parse_action() {
         esac
       else
         ACTION="install"
-        warn "非交互环境未指定操作，默认执行安装。"
+        warn "未检测到可交互终端且未指定操作，默认执行安装。"
       fi
       ;;
     *) err "未知操作：$first"; usage; exit 1 ;;
@@ -223,11 +237,11 @@ choose_host_port() {
     info "检测到现有映射端口：$HOST_PORT"
   elif is_tty; then
     printf "请输入访问端口（默认 %s）: " "$DEFAULT_HOST_PORT"
-    read -r input_port
+    prompt_read input_port
     HOST_PORT="${input_port:-$DEFAULT_HOST_PORT}"
   else
     HOST_PORT="$DEFAULT_HOST_PORT"
-    info "非交互环境，使用默认端口 $HOST_PORT。"
+    info "未检测到可交互终端，使用默认端口 $HOST_PORT。"
   fi
 
   if ! valid_port "$HOST_PORT"; then
@@ -426,11 +440,11 @@ configure_docker_mirror() {
   local use_mirror="${USE_MIRROR:-}"
   if [ -z "$use_mirror" ] && is_tty; then
     printf "是否配置 Docker registry mirror：%s？默认 y [Y/n]: " "$MIRROR_URL"
-    read -r answer
+    prompt_read answer
     case "$answer" in n|N|no|NO) use_mirror=0 ;; *) use_mirror=1 ;; esac
   elif [ -z "$use_mirror" ]; then
     use_mirror=1
-    info "非交互环境，默认配置 Docker registry mirror：$MIRROR_URL。可用 USE_MIRROR=0 关闭。"
+    info "未检测到可交互终端，默认配置 Docker registry mirror：$MIRROR_URL。可用 USE_MIRROR=0 关闭。"
   fi
   use_mirror="${use_mirror:-1}"
 
@@ -652,7 +666,7 @@ uninstall_app() {
   done
   if [ "$purge" != "1" ] && is_tty; then
     printf "是否同时删除数据卷（会清空后台配置/鉴权数据和 Redis 数据）？默认 n [y/N]: "
-    read -r answer
+    prompt_read answer
     case "$answer" in y|Y|yes|YES) purge=1 ;; esac
   fi
 
