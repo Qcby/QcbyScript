@@ -1,51 +1,42 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-顺丰速运自动任务 v1.4.0（mywc网关聚合推送版）
+顺丰速运自动任务 v1.5.0（mywc网关聚合推送版）
 
-功能：自动执行顺丰速运日常积分任务、会员日活动、世界杯活动，支持多账号执行，执行结束后统一聚合推送。
+功能：自动换取顺丰业务 Cookie，执行日常签到、积分任务及会员日活动，支持多账号并在结束后统一聚合推送。
 
 配置说明：
 1. 微信 code 网关：
-   wx_server_url 或 WX_SERVER_URL   必填其一，自建授权服务器域名
-   - 示例：http://127.0.0.1:8110
-   - 脚本会自动拼接 /mywc
-   - 请求格式：GET {网关}/mywc?wxid=账号标识&appId=wxd4185d00bf7e08ac
+   wx_server_url 或 WX_SERVER_URL   微信账号模式必填其一，自建授权服务器地址
+   - 脚本自动请求：GET {网关}/mywc?wxid=账号标识&appId=wxd4185d00bf7e08ac
    - 请求头：auth=账号标识
 
 2. 账号变量：
-   sf_wxid 或 SF_WXID                         推荐，顺丰速运专属账号变量
+   sf_wxid 或 SF_WXID              推荐，顺丰速运专属微信账号变量
    - 多账号支持使用 &、英文逗号、中文逗号或换行分隔
-   - 示例：wxid_a&wxid_b&openida 或 wxid_a,wxid_b,openida
-   - 兼容旧变量 sfsyUrl；如配置 sfsyUrl，则可直接使用已有 Cookie/链接凭证
+   sfsyUrl                          可选，兼容已有顺丰 Cookie 或链接凭证
 
-3. 推送变量：
-   需要同目录存在 SendNotify.py，脚本结束后会统一调用 send_push_notification。
-   常用推送变量如下，配置任意一种即可：
-   QYWX_KEY                                         企业微信机器人 key
-   PUSH_PLUS_TOKEN                                  PushPlus token
-   PUSH_KEY                                         Server 酱 key
-   DD_BOT_TOKEN 或 DD_BOT_SECRET                     钉钉机器人 token/secret
-   FSKEY                                            飞书机器人 key
+3. 推送配置：
+   需要同目录存在 SendNotify.py，脚本结束后统一调用 send_push_notification。
 
-4. 青龙任务建议：
-   名称：顺丰速运自动任务
-   命令：python3 顺丰.py
-   定时：每天运行 1 次即可，具体时间自行调整
+4. 可选代理：
+   SF_PROXY_API_URL                 代理提取接口
+   SF_PROXY_TYPE                    代理类型，默认 socks5
+
+依赖：requests
+青龙任务建议：task sf.py
 """
 
 import hashlib
 import json
 import os
+import sys
 import random
 import re
 import time
-import threading
-import importlib.util
 from datetime import datetime
 from typing import Dict, List, Optional, Any, Tuple
 from urllib.parse import unquote, urlparse, parse_qs, quote as url_encode
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
 import requests
 from requests.packages.urllib3.exceptions import InsecureRequestWarning
@@ -55,49 +46,51 @@ requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 PUSH_SWITCH = os.getenv("SFSY_PUSH", "1")
 SCRIPT_TITLE = "🔔 顺丰速运任务执行总结"
 
+SEND_NOTIFY_AVAILABLE = True
+SEND_NOTIFY_IMPORT_ERROR = ""
 try:
     from SendNotify import send_push_notification
 except Exception as exc:
-    print(f"[警告] 导入 SendNotify.py 失败：{exc}，将退化为控制台打印")
-    def send_push_notification(text, desp):
-        pass
+    SEND_NOTIFY_AVAILABLE = False
+    SEND_NOTIFY_IMPORT_ERROR = str(exc)
+    send_push_notification = None
+    print(f"[警告] 导入 SendNotify.py 失败：{exc}")
+
 
 # ==================== 配置区域 ====================
 ENABLE_DAILY_TASK = True         # 日常积分任务 (签到+做任务+领积分)
 ENABLE_MEMBER_DAY = True         # 会员日活动 (每月26-28号自动执行)
-ENABLE_DRAGON_BOAT = False       # 端午临时活动
-ENABLE_WORLD_CUP = True          # 世界杯活动
 CONCURRENT_NUM = 1               # 并发数量 (1~20)
 
 TOKEN = 'wwesldfs29aniversaryvdld29'
 inviteId = []
 SYS_CODE = 'MCS-MIMP-CORE'
 
-# 统一变量名称与默认端口映射
-SF_WX_SERVER = (os.environ.get("wx_server_url") or os.environ.get("WX_SERVER_URL") or "").strip().rstrip("/")
-SF_WX_APPID = os.getenv("SF_WX_APPID", "wxd4185d00bf7e08ac")       # 小程序 appid
-SF_PUBLIC_ID = os.getenv("SF_PUBLIC_ID", "gh_f9d9fca26a50")         # 小程序原始ID
-SF_OAUTH_APPID = os.getenv("SF_OAUTH_APPID", "wx0d9aa0e894066e87") # 公众号 appid
-SF_OAUTH_SCENE = os.getenv("SF_OAUTH_SCENE", "692")                # 活动场景号
-SF_AUTO_COOKIE = os.getenv("SF_AUTO_COOKIE", "1") == "1"            # 自动获取Cookie开关
-SF_WXIDS = os.environ.get("sf_wxid") or os.environ.get("SF_WXID") or "" # 顺丰专属微信号
-
-WORLD_CUP_ACTIVITY_CODE = 'WORLD_CUP'
-WORLD_CUP_CHANNEL = '26sjbapp'
-WORLD_CUP_PLATFORM = 'SFAPP'
-WORLD_CUP_CITY_CODE = '021'
-WORLD_CUP_TOKEN = 'wwesldfs29aniversaryvdld29'
-WORLD_CUP_SYS_CODE = 'MCS-MIMP-CORE'
-
-WORLD_CUP_AUTO_FINISH_TASK_CODES = {
-    '0CD7AFA68009402DBE5BF9D3C10D0115',
-    '895011E183CE4E61BBACE8A63B98596A',
-}
+SF_WX_SERVER = (
+    os.getenv("wx_server_url")
+    or os.getenv("WX_SERVER_URL")
+    or os.getenv("wechat_server")
+    or os.getenv("WECHAT_SERVER")
+    or ""
+).strip().rstrip("/")
+SF_WX_APPID = os.getenv("SF_WX_APPID", "wxd4185d00bf7e08ac")
+SF_PUBLIC_ID = os.getenv("SF_PUBLIC_ID", "gh_f9d9fca26a50")
+SF_OAUTH_APPID = os.getenv("SF_OAUTH_APPID", "wx0d9aa0e894066e87")
+SF_OAUTH_SCENE = os.getenv("SF_OAUTH_SCENE", "692")
+SF_AUTO_COOKIE = os.getenv("SF_AUTO_COOKIE", "1") == "1"
+SF_WXIDS = (
+    os.getenv("sf_wxid")
+    or os.getenv("SF_WXID")
+    or os.getenv("sfwx_openid")
+    or os.getenv("SFWX_OPENID")
+    or ""
+)
 
 DAILY_SKIP_TASKS = [
     '用行业模板寄件下单', '用积分兑任意礼品', '参与积分活动',
     '每月累计寄件', '完成每月任务', '去使用AI寄件',
     '去新增一个收件偏好', '设置你的顺丰ID', '去使用AI小丰寄件',
+    '寄一单国际件',  # 需真实寄件，无法自动完成
 ]
 
 EXECUTE_FIRST_KEYWORDS = [
@@ -117,18 +110,15 @@ MAX_PROXY_RETRIES = 5
 REQUEST_COUNT = 3
 PROXY_RETRY_DELAY = 2
 PROXY_CONTEXT = {'last_fetch_ts': 0}
-PROXY_LOCK = threading.Lock()
+PROXY_LOCK = Lock()
 print_lock = Lock()
-DRAGON_BOAT_MODULE = None
-DRAGON_BOAT_LOCK = threading.Lock()
 GLOBAL_NOTIFY_BUFFERS: List[Dict[str, Any]] = []
 AUTO_COOKIE_INDEX_BY_VALUE: Dict[str, int] = {}
 
 
 class Logger:
     def __init__(self):
-        self.messages: List[str] = []
-        self.lock = Lock()
+        pass
 
     def _log(self, icon: str, msg: str):
         line = f"{icon} {msg}"
@@ -146,12 +136,17 @@ class Logger:
 
 def _log_global(msg: str):
     t = datetime.now().strftime("%H:%M:%S")
-    print(f"[{t}] {msg}", flush=True)
+    line = f"[{t}] {msg}"
+    try:
+        print(line, flush=True)
+    except UnicodeEncodeError:
+        # Windows 控制台默认 GBK 时，降级去掉无法编码字符，避免影响主流程
+        encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+        print(line.encode(encoding, errors="ignore").decode(encoding, errors="ignore"), flush=True)
 
 
 def parse_env_accounts(raw: str) -> List[str]:
-    normalized = (raw or "").replace("，", ",").replace(",", "&").replace("\n", "&")
-    return [item.strip() for item in normalized.split("&") if item.strip()]
+    return [item.strip() for item in re.split(r"[&,，\r\n]+", str(raw or "")) if item.strip()]
 
 
 def mask_account(value: Any) -> str:
@@ -258,60 +253,46 @@ class AutoCookieManager:
         self.session = requests.Session()
         self.session.verify = False
     
-    def _get_online_accounts(self) -> List[Dict]:
-        if not self.wx_server:
-            _log_global("❌ 未配置 wx_server_url 或 WX_SERVER_URL，无法获取在线账号")
-            return []
-        try:
-            r = self.session.get(f"{self.wx_server}/api/v1/wx/user/status", timeout=10)
-            j = r.json()
-            data = j.get("Data") or j.get("data") or {}
-            accounts = []
-            for k, v in data.items():
-                if isinstance(v, dict) and v.get("wxid") and v.get("survival") == 1:
-                    accounts.append(v)
-            return accounts
-        except Exception as e:
-            _log_global(f"❌ 获取在线账号失败: {e}")
-            return []
-    
     def _get_wx_code(self, wxid: str, appid: str = None, max_retries: int = 3) -> Optional[str]:
+        """通过标准 mywc 网关获取微信小程序 Code。"""
         if not self.wx_server:
-            _log_global("❌ 未配置 wx_server_url 或 WX_SERVER_URL，无法请求 /mywc")
+            _log_global("❌ 未配置 wx_server_url 或 WX_SERVER_URL，无法获取微信 Code")
             return None
+
         target_appid = appid or SF_WX_APPID
         url = f"{self.wx_server}/mywc"
-        
-        for attempt in range(max_retries):
+        last_error = "未知错误"
+
+        for attempt in range(1, max_retries + 1):
             try:
-                params = {"wxid": wxid, "appId": target_appid}
-                headers = {"auth": wxid, "User-Agent": "Mozilla/5.0 MicroMessenger/8.0.50"}
-                
-                r = self.session.get(url, params=params, headers=headers, timeout=30)
-                j = r.json()
-                
-                if j.get("status") == "ok" and j.get("code"):
-                    return str(j["code"])
-                
-                data = j.get("Data") or j.get("data") or {}
-                code = data.get("code") or j.get("code") or ""
-                if not code:
-                    if attempt < max_retries - 1:
-                        wait = (attempt + 1) * 3
-                        _log_global(f"⚠️ {wxid[:12]}***: code为空，{wait}s后重试({attempt+1}/{max_retries})")
-                        time.sleep(wait)
-                        continue
-                    _log_global(f"❌ {wxid[:12]}***: 获取code失败 appid={target_appid} resp={str(j)[:120]}")
-                    return None
-                return str(code)
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    wait = (attempt + 1) * 3
-                    _log_global(f"⚠️ {wxid[:12]}***: code异常 {str(e)[:60]}，{wait}s后重试({attempt+1}/{max_retries})")
-                    time.sleep(wait)
-                    continue
-                _log_global(f"❌ {wxid[:12]}***: 获取code异常 appid={target_appid} err={str(e)[:80]}")
-                return None
+                response = self.session.get(
+                    url,
+                    params={"wxid": wxid, "appId": target_appid},
+                    headers={"auth": wxid},
+                    timeout=30,
+                )
+                response.raise_for_status()
+                payload = response.json()
+                data = payload.get("data") if isinstance(payload, dict) else None
+                code_value = data.get("code") if isinstance(data, dict) else data
+                code_value = code_value or (payload.get("code") if isinstance(payload, dict) else None)
+
+                if isinstance(code_value, str) and code_value.strip():
+                    _log_global(f"✅ {mask_account(wxid)} 获取微信 Code 成功")
+                    return code_value.strip()
+                last_error = str(payload)[:160]
+            except Exception as exc:
+                last_error = str(exc)[:160]
+
+            if attempt < max_retries:
+                wait = attempt * 3
+                _log_global(
+                    f"⚠️ {mask_account(wxid)} 获取 Code 失败，{wait}s 后重试 "
+                    f"({attempt}/{max_retries - 1})：{last_error}"
+                )
+                time.sleep(wait)
+
+        _log_global(f"❌ {mask_account(wxid)} 获取微信 Code 失败：{last_error}")
         return None
 
     def _ucmp_app_on_login(self, code: str) -> Optional[Dict]:
@@ -345,72 +326,139 @@ class AutoCookieManager:
         except Exception: return None, None
     
     def get_cookie_for_wxid(self, wxid: str) -> Optional[str]:
+        """通过 /mywc 获取 Code 后，走 UCMP 换取顺丰 Cookie。
+
+        说明：
+        - 旧版 OAuth 回调链路容易只拿到 sessionId，但 _login_mobile_ / _login_user_id_ 为空
+        - 这里对齐 sfsy/sfkd 的 sfnewactivity 换绑流程，保证业务 Cookie 完整
+        """
         code = self._get_wx_code(wxid, SF_WX_APPID)
-        if not code: return None
+        if not code:
+            return None
+
         ucmp = self._ucmp_app_on_login(code)
-        if not ucmp: return None
-        ucmp_sid = ucmp.get("sessionId", "")
-        
-        redirect_uri, state = self._get_oauth_redirect_info(ucmp_sid)
-        if not redirect_uri or not state: return None
-        
-        oauth_code = self._get_wx_code(wxid, SF_OAUTH_APPID)
-        if not oauth_code: return None
-        
+        if not ucmp:
+            _log_global(f"❌ {wxid[:10]}*** appOnLogin 失败")
+            return None
+
+        suuid = ucmp.get("sessionId", "")
+        if not suuid:
+            _log_global(f"❌ {wxid[:10]}*** appOnLogin 未返回 sessionId")
+            return None
+
         try:
-            callback_url = f"{redirect_uri}&code={oauth_code}&state={url_encode(state)}"
-            s2 = requests.Session()
-            s2.verify = False
-            s2.headers.update({
-                "User-Agent": "Mozilla/5.0 MicroMessenger/8.0.50",
-                "Accept": "text/html,*/*",
-                "Referer": "https://open.weixin.qq.com/",
-            })
-            s2.get(callback_url, allow_redirects=True, timeout=25)
+            s = requests.Session()
+            s.verify = False
+            ua = (
+                "Mozilla/5.0 (iPhone; CPU iPhone OS 16_2 like Mac OS X) "
+                "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 "
+                "MicroMessenger/8.0.69(0x1800452d) NetType/WIFI Language/zh_CN"
+            )
+
+            # 尝试查询绑定信息（失败不阻断，后续仍可从 Cookie 取手机号）
+            try:
+                bind_headers = {
+                    "user-agent": ua,
+                    "content-type": "application/json",
+                    "accept": "application/json, text/plain, */*",
+                    "cookie": f"suuid={suuid}",
+                    "referer": f"https://servicewechat.com/{SF_WX_APPID}/663/page-frame.html",
+                }
+                s.post(
+                    "https://ucmp.sf-express.com/wxopen/weixin/wxMemIsBind",
+                    json={},
+                    headers=bind_headers,
+                    timeout=15,
+                )
+            except Exception:
+                pass
+
+            biz_code = json.dumps({
+                "path": "/up-member/newPoints",
+                "linkCode": "SFAC20230803190840424",
+                "supportShare": "YES",
+                "subCategoryCode": "1",
+                "from": "mypoint",
+                "categoryCode": "1",
+            }, ensure_ascii=False)
+            sfnew_url = (
+                "https://ucmp.sf-express.com/wechat-act/weixin/activity/sfnewactivity?"
+                f"bizCode={url_encode(biz_code)}&regSource=mypoint&citycode=025"
+                f"&cityname={url_encode('广州')}&wxapp-version=V17.49&suuid={suuid}"
+            )
+            sfnew_headers = {
+                "user-agent": ua,
+                "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            }
+            s.get(sfnew_url, headers=sfnew_headers, timeout=25, allow_redirects=True)
+
             cookies = {}
-            for c in s2.cookies:
+            for c in s.cookies:
                 if "mcs-mimp" in c.domain or "sf-express" in c.domain:
                     cookies[c.name] = c.value
-            
-            session_id = cookies.get("sessionId", "")
-            login_mobile = cookies.get("_login_mobile_", "")
-            login_user_id = cookies.get("_login_user_id_", "")
-            
+
+            session_id = cookies.get("sessionId") or s.cookies.get("sessionId", "")
+            login_mobile = cookies.get("_login_mobile_") or s.cookies.get("_login_mobile_", "")
+            login_user_id = cookies.get("_login_user_id_") or s.cookies.get("_login_user_id_", "")
+
+            # 兜底：部分环境下需要再访问会员页补齐 cookie
             if session_id and (not login_mobile or not login_user_id):
                 try:
-                    s2.headers.update({"Cookie": f"sessionId={session_id}"})
-                    s2.get("https://mcs-mimp-web.sf-express.com/mcs-mimp/app/index.html", allow_redirects=True, timeout=15)
-                    for c in s2.cookies:
+                    s.headers.update({
+                        "User-Agent": ua,
+                        "Cookie": f"sessionId={session_id}",
+                    })
+                    s.get(
+                        "https://mcs-mimp-web.sf-express.com/mcs-mimp/app/index.html",
+                        allow_redirects=True,
+                        timeout=15,
+                    )
+                    for c in s.cookies:
                         if "mcs-mimp" in c.domain or "sf-express" in c.domain:
                             cookies[c.name] = c.value
                     login_mobile = cookies.get("_login_mobile_", "")
                     login_user_id = cookies.get("_login_user_id_", "")
-                except: pass
-            
+                    session_id = cookies.get("sessionId", session_id)
+                except Exception:
+                    pass
+
             if not session_id or not login_mobile or not login_user_id:
+                _log_global(
+                    f"❌ {wxid[:10]}*** Cookie 不完整 session={bool(session_id)} "
+                    f"mobile={bool(login_mobile)} uid={bool(login_user_id)}"
+                )
                 return None
-            
-            parts = [f"sessionId={session_id}", f"_login_mobile_={login_mobile}", f"_login_user_id_={login_user_id}"]
+
+            parts = [
+                f"sessionId={session_id}",
+                f"_login_mobile_={login_mobile}",
+                f"_login_user_id_={login_user_id}",
+            ]
             for k in ["HWWAFSESTIME", "HWWAFSESID", "JSESSIONID"]:
-                if k in cookies: parts.append(f"{k}={cookies[k]}")
-            
+                if k in cookies and cookies[k]:
+                    parts.append(f"{k}={cookies[k]}")
+
             cookie_str = ";".join(parts)
             _log_global(f"✅ {wxid[:10]}*** 自动获取凭证换绑成功 ➔ 手机: {login_mobile}")
             return cookie_str
-        except Exception: return None
-    
+        except Exception as e:
+            _log_global(f"❌ {wxid[:10]}*** 换取 Cookie 异常: {str(e)[:80]}")
+            return None
+
     def get_cookies_for_wxids(self, wxids: List[str] = None) -> Dict[str, str]:
         if not wxids:
-            accounts = self._get_online_accounts()
-            wxids = [a["wxid"] for a in accounts]
-        
+            return {}
+
         results = {}
         for i, wxid in enumerate(wxids):
             try:
                 cookie = self.get_cookie_for_wxid(wxid)
-                if cookie: results[wxid] = cookie
-            except Exception: pass
-            if i < len(wxids) - 1: time.sleep(2)
+                if cookie:
+                    results[wxid] = cookie
+            except Exception:
+                pass
+            if i < len(wxids) - 1:
+                time.sleep(2)
         return results
 
 
@@ -484,12 +532,6 @@ class SFHttpClient:
             except Exception: return None
         return None
 
-    def request_app(self, url: str, data: Optional[Dict] = None) -> Optional[Dict]:
-        original = self.headers.get('platform', 'MINI_PROGRAM')
-        self.headers['platform'] = 'SFAPP'
-        try: return self.request(url, data)
-        finally: self.headers['platform'] = original
-
     def login(self, url: str) -> Tuple[bool, str, str]:
         try:
             decoded = unquote(url)
@@ -526,118 +568,254 @@ class DailyTaskExecutor:
         self.strategyId = 0
         self.title = ""
         self.point = 0
+        self.completed_count = 0
+        self.rewarded_count = 0
 
     @staticmethod
     def generate_device_id() -> str:
-        result = ''
-        for char in 'xxxxxxxx-xxxx-xxxx':
-            result += random.choice('abcdef0123456789') if char == 'x' else char
+        result = ""
+        for char in "xxxxxxxx-xxxx-xxxx":
+            result += random.choice("abcdef0123456789") if char == "x" else char
         return result
 
     def _extract_task_id_from_url(self, url: str) -> str:
+        """从 buttonRedirect 的 _ug_view_param 中提取 taskId/taskCode。"""
+        if not url:
+            return ""
         try:
-            parsed = urlparse(url)
+            parsed = urlparse(str(url))
             params = parse_qs(parsed.query)
-            if '_ug_view_param' in params:
-                ug_params = json.loads(unquote(params['_ug_view_param'][0]))
-                if 'taskId' in ug_params: return str(ug_params['taskId'])
-        except Exception: pass
-        return ''
+            if "_ug_view_param" in params:
+                ug_params = json.loads(unquote(params["_ug_view_param"][0]))
+                for key in ("taskId", "taskCode", "task_id"):
+                    if ug_params.get(key):
+                        return str(ug_params[key])
+            # 兜底：正则抓 taskId
+            m = re.search(r'"taskId"\s*:\s*"([^"]+)"', str(url))
+            if m:
+                return m.group(1)
+        except Exception:
+            pass
+        return ""
+
+    def _resolve_task_code(self, task: Dict) -> str:
+        code = str(task.get("taskCode") or "").strip()
+        if code:
+            return code
+        # 部分浏览任务 taskCode 为空，真实 code 在跳转参数里
+        for key in ("buttonRedirect", "taskJumpAddress", "redirectUrl"):
+            extracted = self._extract_task_id_from_url(task.get(key, ""))
+            if extracted:
+                return extracted
+        return ""
 
     def _set_task_attrs(self, task: Dict):
-        self.taskId = str(task.get('taskId', ''))
-        self.taskCode = str(task.get('taskCode', ''))
-        self.strategyId = int(task.get('strategyId', 0))
-        self.title = str(task.get('title', '未知任务'))
-        self.point = int(task.get('point', 0))
-
-    def app_sign_in(self) -> Tuple[bool, str]:
-        url = 'https://mcs-mimp-web.sf-express.com/mcs-mimp/commonPost/~memberNonactivity~integralTaskSignPlusService~getUnFetchPointAndDiscount'
-        resp = self.http.request_app(url, {})
-        if resp and resp.get('success'): return True, ''
-        return False, '未完成'
+        self.taskId = str(task.get("taskId", "") or "")
+        self.taskCode = self._resolve_task_code(task)
+        try:
+            self.strategyId = int(task.get("strategyId", 0) or 0)
+        except Exception:
+            self.strategyId = 0
+        self.title = str(task.get("title", "未知任务") or "未知任务")
+        try:
+            self.point = int(task.get("point", 0) or task.get("awardIntegral", 0) or 0)
+        except Exception:
+            self.point = 0
 
     def sign_in(self) -> Tuple[bool, str]:
-        url = 'https://mcs-mimp-web.sf-express.com/mcs-mimp/commonPost/~memberNonactivity~integralTaskSignPlusService~automaticSignFetchPackage'
+        url = "https://mcs-mimp-web.sf-express.com/mcs-mimp/commonPost/~memberNonactivity~integralTaskSignPlusService~automaticSignFetchPackage"
         resp = self.http.request(url, {"comeFrom": "vioin", "channelFrom": "WEIXIN"})
-        if resp and resp.get('success'):
-            obj = resp.get('obj', {})
-            packets = obj.get('integralTaskSignPackageVOList', [])
-            if packets: self.logger.success(f'小程序签到成功: 【{packets[0].get("packetName")}】')
-            return True, ''
-        return False, '失败'
+        if resp and resp.get("success"):
+            obj = resp.get("obj") or {}
+            packets = obj.get("integralTaskSignPackageVOList") or []
+            count_day = obj.get("countDay", obj.get("countDays", "-"))
+            if packets:
+                self.logger.success(
+                    f"小程序签到成功: 【{packets[0].get('packetName')}】，本周累计【{count_day}】天"
+                )
+            else:
+                # hasFinishSign=1 表示今日已签
+                if obj.get("hasFinishSign") == 1:
+                    self.logger.info(f"小程序今日已签到，本周累计【{count_day}】天")
+                else:
+                    self.logger.success(f"小程序签到完成，本周累计【{count_day}】天")
+            return True, ""
+        err = (resp or {}).get("errorMessage") or "失败"
+        self.logger.warning(f"小程序签到失败: {err}")
+        return False, err
 
-    def _sign_v2(self, platform_type: str) -> bool:
-        url = 'https://mcs-mimp-web.sf-express.com/mcs-mimp/commonPost/~memberNonactivity~integralSignV2Service~sign'
-        headers = {'platform': platform_type, 'deviceid': self.generate_device_id()}
-        resp = self.http.request(url, {}, headers)
-        if resp and resp.get('success'): return True
-        return False
-
-    def dual_sign_in(self) -> bool:
-        self._sign_v2('SFAPP')
-        time.sleep(1)
-        self._sign_v2('MINI_PROGRAM')
-        return True
-
-    # ── 痛点修复：修正字典结构解析层级，解决 KeyError 死结 ──
     def get_task_list(self) -> List[Dict]:
-        url = 'https://mcs-mimp-web.sf-express.com/mcs-mimp/commonPost/~memberNonactivity~integralTaskStrategyService~queryPointTaskAndSignFromES'
-        all_tasks = []
+        """拉取多 channel 任务并去重，兼容 taskCode 为空的浏览任务。"""
+        url = "https://mcs-mimp-web.sf-express.com/mcs-mimp/commonPost/~memberNonactivity~integralTaskStrategyService~queryPointTaskAndSignFromES"
+        all_tasks: List[Dict] = []
         seen = set()
-        for ct in ['1', '2']:
-            resp = self.http.request(url, {'channelType': ct, 'deviceId': self.generate_device_id()})
-            if resp and resp.get('success') and resp.get('obj'):
-                obj = resp['obj']
-                self.total_points = obj.get('totalPoint', 0)
-                
-                # 阶梯式安全抓取嵌套内部的核心任务链
-                task_items = obj.get('ESobj') or obj.get('taskTitleLevels') or []
-                for task in task_items:
-                    tc = task.get('taskCode', '')
-                    if tc and tc not in seen:
-                        seen.add(tc)
-                        all_tasks.append(task)
+
+        for ct in ["1", "2", "3", "4", "01", "02", "03", "04"]:
+            resp = self.http.request(url, {
+                "channelType": ct,
+                "deviceId": self.generate_device_id(),
+            })
+            if not (resp and resp.get("success") and resp.get("obj")):
+                continue
+
+            obj = resp["obj"] or {}
+            # 优先记录 channel 1 的积分
+            if ct in ("1", "01") or not self.total_points:
+                self.total_points = int(obj.get("totalPoint", self.total_points) or self.total_points or 0)
+
+            task_items = obj.get("taskTitleLevels") or obj.get("ESobj") or []
+            if not isinstance(task_items, list):
+                continue
+
+            for task in task_items:
+                if not isinstance(task, dict):
+                    continue
+                task = dict(task)
+                tc = self._resolve_task_code(task)
+                if tc:
+                    task["taskCode"] = tc
+                # 去重键：优先 taskCode，其次 taskId+title
+                key = tc or f"{task.get('taskId','')}|{task.get('title','')}"
+                if not key or key in seen:
+                    continue
+                seen.add(key)
+                all_tasks.append(task)
+
         return all_tasks
 
     def execute_task(self) -> bool:
-        url = 'https://mcs-mimp-web.sf-express.com/mcs-mimp/commonRoutePost/memberEs/taskRecord/finishTask'
-        resp = self.http.request(url, {'taskCode': self.taskCode})
-        return bool(resp and resp.get('success'))
+        if not self.taskCode:
+            return False
+        url = "https://mcs-mimp-web.sf-express.com/mcs-mimp/commonRoutePost/memberEs/taskRecord/finishTask"
+        resp = self.http.request(url, {"taskCode": self.taskCode})
+        if not resp:
+            self.logger.warning(f"任务提交无响应: {self.title}")
+            return False
+        if resp.get("success"):
+            # 有些任务 success=true 但 obj=false，表示服务端接受但未真正完成
+            if resp.get("obj") is False:
+                self.logger.warning(f"任务提交返回未完成: {self.title}")
+                return False
+            self.logger.success(f"任务提交成功: {self.title}")
+            self.completed_count += 1
+            return True
+        err = resp.get("errorMessage") or "未知错误"
+        self.logger.warning(f"任务提交失败: {self.title} ➔ {err}")
+        return False
 
     def receive_task_reward(self) -> bool:
-        url = 'https://mcs-mimp-web.sf-express.com/mcs-mimp/commonPost/~memberNonactivity~integralTaskStrategyService~fetchIntegral'
-        data = {"strategyId": self.strategyId, "taskId": self.taskId, "taskCode": self.taskCode, "deviceId": self.generate_device_id()}
+        if not self.taskCode:
+            return False
+        url = "https://mcs-mimp-web.sf-express.com/mcs-mimp/commonPost/~memberNonactivity~integralTaskStrategyService~fetchIntegral"
+        data = {
+            "strategyId": self.strategyId,
+            "taskId": self.taskId,
+            "taskCode": self.taskCode,
+            "deviceId": self.generate_device_id(),
+        }
         resp = self.http.request(url, data)
-        if resp and resp.get('success'):
-            self.logger.success(f'日常任务奖励领取成功 ➔ {self.title}')
+        if resp and resp.get("success"):
+            self.logger.success(f"日常任务奖励领取成功 ➔ {self.title} (+{self.point})")
+            self.rewarded_count += 1
             return True
+        err = (resp or {}).get("errorMessage") or "领取失败"
+        self.logger.warning(f"奖励领取失败: {self.title} ➔ {err}")
         return False
 
     def run(self) -> Tuple[int, int]:
+        self.logger.task("开始获取日常积分任务列表")
         tasks = self.get_task_list()
-        if not tasks: return 0, 0
+        if not tasks:
+            self.logger.warning("日常任务列表为空")
+            return 0, 0
+
         points_before = self.total_points
+        self.logger.points(points_before, "执行前积分")
+        self.logger.info(f"共发现 {len(tasks)} 个日常任务")
+
         for task in tasks:
-            title = task.get('title', '未知')
-            status = task.get('status')
-            if status == 3 or title in DAILY_SKIP_TASKS: continue
+            title = str(task.get("title") or "未知任务")
+            status = task.get("status")
+            try:
+                status = int(status)
+            except Exception:
+                pass
+
+            # 3 = 已完成
+            if status == 3:
+                self.logger.info(f"已完成: {title}")
+                continue
+
+            if title in DAILY_SKIP_TASKS:
+                self.logger.info(f"跳过不可自动完成任务: {title}")
+                continue
+
             self._set_task_attrs(task)
-            if not self.taskCode: continue
-            
+            if not self.taskCode:
+                self.logger.warning(f"无法提取 taskCode，跳过: {title}")
+                continue
+
+            self.logger.task(f"处理任务: {title} (status={status}, +{self.point})")
+
+            # status 1 = 待完成，先提交
             if status == 1:
+                # 连续签到类进度未满则跳过
+                process = str(task.get("process") or "")
+                if "连签" in title and "/" in process:
+                    try:
+                        current, total = map(int, process.split("/", 1))
+                        if current < total:
+                            self.logger.info(f"{title} 进度 {process}，暂不可领")
+                            continue
+                    except Exception:
+                        pass
+
                 if self.execute_task():
                     time.sleep(2)
                     status = 2
+                else:
+                    time.sleep(1)
+                    continue
+
+            # status 2 = 可尝试领奖；失败则先完成再领
             if status == 2:
-                need_execute = any(kw in title for kw in EXECUTE_FIRST_KEYWORDS)
-                if need_execute:
+                # 浏览类关键词优先完成再领
+                need_execute_first = any(kw in title for kw in EXECUTE_FIRST_KEYWORDS)
+                if need_execute_first:
                     self.execute_task()
                     time.sleep(2)
-                self.receive_task_reward()
-            time.sleep(3)
+                    if self.receive_task_reward():
+                        time.sleep(1)
+                        continue
+
+                # 先尝试直接领奖
+                if self.receive_task_reward():
+                    time.sleep(1)
+                    continue
+
+                # 直接领失败，再执行一次后重试
+                if self.execute_task():
+                    time.sleep(2)
+                    self.receive_task_reward()
+                time.sleep(1)
+                continue
+
+            time.sleep(1)
+
+        # 刷新积分
         self.get_task_list()
-        return points_before, self.total_points
+        points_after = self.total_points
+        self.logger.points(points_after, "执行后积分")
+        earned = points_after - points_before
+        if self.completed_count == 0 and self.rewarded_count == 0:
+            self.logger.info(
+                "说明: 当前可自动完成的浏览/点击类任务已全部完成；"
+                "剩余未完成任务多为真实寄件/设置类，需人工操作"
+            )
+        self.logger.info(
+            f"日常任务统计: 提交成功 {self.completed_count}，领奖成功 {self.rewarded_count}，积分变化 {earned:+d}"
+        )
+        return points_before, points_after
 
 
 # ==================== 会员日活动执行器 ====================
@@ -675,51 +853,6 @@ class MemberDayExecutor:
         return result
 
 
-# ==================== 世界杯活动执行器 ====================
-class WorldCupExecutor:
-    BASE_URL = 'https://mcs-mimp-web.sf-express.com/mcs-mimp'
-    def __init__(self, http: SFHttpClient, logger: Logger, user_id: str):
-        self.http = http
-        self.logger = logger
-        self.user_id = user_id
-
-    def _post(self, path: str, data: Optional[Dict] = None) -> Optional[Dict]:
-        return self.http.request(f'{self.BASE_URL}{path}', data=data or {})
-
-    def run(self) -> Dict[str, Any]:
-        result = {'tasks_completed': 0, 'stages_passed': [], 'daily_gift': False, 'final_balance': 0}
-        idx = self._post('/commonPost/~memberNonactivity~worldCupIndexService~index')
-        if not idx or not idx.get('success'): return result
-        
-        gift = self._post('/commonPost/~memberNonactivity~worldCupDailyService~getDailyGiftStatus', {"cityCode": WORLD_CUP_CITY_CODE})
-        if gift and gift.get('obj', {}).get('canReceive') and not gift.get('obj', {}).get('received'):
-            self._post('/commonPost/~memberNonactivity~worldCupDailyService~receiveDailyGift', {"cityCode": WORLD_CUP_CITY_CODE})
-            result['daily_gift'] = True
-            self.logger.success("世界杯每日特权礼物领取成功")
-            
-        for code in WORLD_CUP_AUTO_FINISH_TASK_CODES:
-            res = self._post('/commonPost/~memberEs~taskRecord~finishTask', {"taskCode": code})
-            if res and res.get('success'): result['tasks_completed'] += 1
-        
-        self._post('/commonPost/~memberNonactivity~worldCupTaskService~fetchTaskReward', {"channelType": WORLD_CUP_PLATFORM, "activityCode": WORLD_CUP_ACTIVITY_CODE})
-        
-        game = self._post('/commonPost/~memberNonactivity~worldCupGameService~index')
-        if game and game.get('success'):
-            lv_list = game.get('obj', {}).get('levelList', [])
-            cur_lv = game.get('obj', {}).get('curLevel', 1)
-            for cfg in lv_list:
-                no = cfg.get('level')
-                if no == cur_lv:
-                    p_res = self._post('/commonPost/~memberNonactivity~worldCupGameService~passReport', {"level": no, "shotNum": cfg.get('target', 0)})
-                    if p_res and p_res.get('success'):
-                        result['stages_passed'].append(no)
-                        self.logger.success(f"世界杯射门游戏突破第 {no} 关")
-                        
-        bet = self._post('/commonPost/~memberNonactivity~worldCupMatchService~betStatus')
-        if bet: result['final_balance'] = bet.get('obj', {}).get('currentAccount', {}).get('balance', 0)
-        return result
-
-
 # ==================== 核心处理器 ====================
 def run_account(account_raw: str, index: int) -> Dict[str, Any]:
     logger = Logger()
@@ -729,38 +862,48 @@ def run_account(account_raw: str, index: int) -> Dict[str, Any]:
     http = SFHttpClient(fixed_proxy)
     success, user_id, phone = http.login(account_url)
     if not success:
-        return {'success': False, 'phone': '未登录账号'}
+        return {
+            'success': False,
+            'phone': '未登录账号',
+            'error': '登录失败或顺丰凭证已失效',
+            'points_before': 0,
+            'points_after': 0,
+            'points_earned': 0,
+            'member_day_prizes': [],
+        }
         
     masked = phone[:3] + "****" + phone[7:] if len(phone) >= 7 else phone
     logger.success(f"账号 [{index + 1}] ➔ 【{masked}】激活认证成功")
     
-    result = {'success': True, 'phone': masked, 'index': index, 'points_earned': 0, 'member_day_prizes': [], 'world_cup': None}
+    result = {'success': True, 'phone': masked, 'index': index, 'points_before': 0, 'points_after': 0, 'points_earned': 0, 'member_day_prizes': []}
     
     if ENABLE_DAILY_TASK:
+        logger.task("开始执行日常积分任务（签到 + 做任务 + 领积分）")
         daily = DailyTaskExecutor(http, logger, user_id)
-        daily.dual_sign_in()
+        # 小程序签到
         daily.sign_in()
+        time.sleep(1)
         pb, pa = daily.run()
+        result['points_before'] = pb
+        result['points_after'] = pa
         result['points_earned'] = pa - pb
+        logger.info(f"日常任务积分变化: {pb} -> {pa} ({(pa - pb):+d})")
         
     if ENABLE_MEMBER_DAY and 26 <= datetime.now().day <= 28:
         md = MemberDayExecutor(http, logger, user_id)
         result['member_day_prizes'] = md.run().get('lottery_prizes', [])
-        
-    if ENABLE_WORLD_CUP and datetime.now() <= datetime(2026, 7, 20, 23, 59, 59):
-        wc = WorldCupExecutor(http, logger, user_id)
-        result['world_cup'] = wc.run()
         
     return result
 
 
 def _auto_fetch_cookies() -> List[str]:
     mgr = AutoCookieManager()
-    wxids = parse_env_accounts(SF_WXIDS) if SF_WXIDS else [a["wxid"] for a in mgr._get_online_accounts()]
+    wxids = parse_env_accounts(SF_WXIDS)
     if not wxids:
+        _log_global("❌ 未配置 sf_wxid 或 SF_WXID")
         return []
 
-    _log_global(f"🔎 顺丰 wxid 解析到 {len(wxids)} 个账号")
+    _log_global(f"🔎 顺丰专属账号变量解析到 {len(wxids)} 个账号")
     cookies: List[str] = []
     AUTO_COOKIE_INDEX_BY_VALUE.clear()
 
@@ -784,7 +927,6 @@ def _auto_fetch_cookies() -> List[str]:
             "ok": False,
             "points": 0,
             "member_day_prizes": [],
-            "world_cup": {},
             "message": "自动换取顺丰 Cookie 失败，请检查该微信是否在线、是否已授权顺丰、是否绑定手机号",
         })
         if index < len(wxids):
@@ -799,9 +941,10 @@ def append_notify_result(index: int, result: Dict[str, Any]) -> None:
         "index": index,
         "account": result.get("phone") or "未知账号",
         "ok": bool(result.get("success")),
+        "points_before": int(result.get("points_before") or 0),
+        "points_after": int(result.get("points_after") or 0),
         "points": int(result.get("points_earned") or 0),
         "member_day_prizes": result.get("member_day_prizes") or [],
-        "world_cup": result.get("world_cup") or {},
         "message": result.get("error") or "登录失效",
     })
 
@@ -831,22 +974,13 @@ def build_notify_report() -> str:
         ])
 
         if ok:
-            lines.append(f"💰 积分：+{item.get('points')}")
+            lines.append(
+                f"💰 积分：{item.get('points_before', 0)} → {item.get('points_after', 0)} "
+                f"（变化 {int(item.get('points') or 0):+d}）"
+            )
             prizes = item.get("member_day_prizes") or []
             if prizes:
                 lines.append(f"🎁 会员日：{', '.join(str(p) for p in prizes)}")
-            wc = item.get("world_cup") or {}
-            wc_parts = []
-            if wc.get("daily_gift"):
-                wc_parts.append("礼物已领✅")
-            if wc.get("tasks_completed"):
-                wc_parts.append(f"任务+{wc.get('tasks_completed')}")
-            if wc.get("stages_passed"):
-                wc_parts.append(f"通关+{len(wc.get('stages_passed') or [])}关")
-            if wc.get("final_balance"):
-                wc_parts.append(f"金币:{wc.get('final_balance')}")
-            if wc_parts:
-                lines.append(f"⚽ 世界杯：{' '.join(wc_parts)}")
         else:
             lines.append(f"🧨 原因：{item.get('message')}")
 
@@ -856,45 +990,72 @@ def build_notify_report() -> str:
 
 
 def dispatch_notify() -> None:
-    if PUSH_SWITCH != "1" or not GLOBAL_NOTIFY_BUFFERS:
+    if not GLOBAL_NOTIFY_BUFFERS:
         return
+
     final_desp = build_notify_report()
-    print("\n[聚合推送报表阅览]\n" + final_desp)
+    print("\n" + final_desp)
+    if PUSH_SWITCH != "1":
+        print("[通知] SFSY_PUSH 已关闭，仅输出聚合报表")
+        return
+    if not SEND_NOTIFY_AVAILABLE:
+        print(f"[通知] 未执行推送：SendNotify.py 导入失败：{SEND_NOTIFY_IMPORT_ERROR}")
+        return
+
     try:
         send_push_notification(SCRIPT_TITLE, final_desp)
+        print("[通知] 聚合推送完成")
     except Exception as exc:
-        print(f"[通知] 推送失败：{exc}")
+        print(f"[通知] 聚合推送失败：{exc}")
 
 
 def main():
-    env_value = os.getenv('sfsyUrl') or ""
-    account_list = _auto_fetch_cookies() if (not env_value or SF_AUTO_COOKIE) else parse_env_accounts(env_value)
-    
+    GLOBAL_NOTIFY_BUFFERS.clear()
+    AUTO_COOKIE_INDEX_BY_VALUE.clear()
+
+    legacy_value = os.getenv("sfsyUrl") or ""
+    if SF_AUTO_COOKIE and SF_WXIDS.strip():
+        account_list = _auto_fetch_cookies()
+    elif legacy_value.strip():
+        account_list = parse_env_accounts(legacy_value)
+    else:
+        account_list = _auto_fetch_cookies() if SF_AUTO_COOKIE else []
+
     if not account_list:
-        print("❌ 未捕获到在线顺丰账号凭证，请检查 wx_server_url / SF_WXID / sf_wxid / sfsyUrl")
-        GLOBAL_NOTIFY_BUFFERS.append({
-            "index": 0,
-            "account": "未配置",
-            "ok": False,
-            "points": 0,
-            "member_day_prizes": [],
-            "world_cup": {},
-            "message": "未捕获到在线顺丰账号凭证",
-        })
+        if not GLOBAL_NOTIFY_BUFFERS:
+            GLOBAL_NOTIFY_BUFFERS.append({
+                "index": 0,
+                "account": "未配置",
+                "ok": False,
+                "points_before": 0,
+                "points_after": 0,
+                "points": 0,
+                "member_day_prizes": [],
+                "message": "请配置 sf_wxid 或 SF_WXID；也可使用旧变量 sfsyUrl",
+            })
         dispatch_notify()
         return 1
 
     print("==================================================")
-    print(f"🎉 顺丰速运 mywc 网关聚合推送版启动... 共加载 {len(account_list)} 个账户")
+    print(f"🎉 顺丰速运任务启动... 共加载 {len(account_list)} 个账户")
     print("==================================================")
-    
-    ok_count = 0
+
     for idx, raw in enumerate(account_list):
-        result = run_account(raw, idx)
+        try:
+            result = run_account(raw, idx)
+        except Exception as exc:
+            result = {
+                "success": False,
+                "phone": f"账号{idx + 1}",
+                "error": f"账号执行异常：{str(exc)[:160]}",
+                "points_before": 0,
+                "points_after": 0,
+                "points_earned": 0,
+                "member_day_prizes": [],
+            }
         append_notify_result(AUTO_COOKIE_INDEX_BY_VALUE.get(raw, idx + 1), result)
-        if result.get('success'):
-            ok_count += 1
-        time.sleep(2)
+        if idx < len(account_list) - 1:
+            time.sleep(2)
 
     dispatch_notify()
     total_failed = sum(1 for item in GLOBAL_NOTIFY_BUFFERS if not item.get("ok"))
@@ -902,4 +1063,4 @@ def main():
 
 
 if __name__ == '__main__':
-    raise SystemExit(main())
+    sys.exit(main())
