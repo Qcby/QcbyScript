@@ -9,9 +9,9 @@
 #   bash install.sh status|address|logs|restart|reset-password|help
 #
 # 管道：
-#   curl -fsSL https://raw.githubusercontent.com/Qcby/QcbyScript/code/install.sh | bash                         # 打开交互菜单
-#   curl -fsSL https://raw.githubusercontent.com/Qcby/QcbyScript/code/install.sh | bash -s -- install 8110 latest # 明确指定安装
-#   curl -fsSL https://raw.githubusercontent.com/Qcby/QcbyScript/code/install.sh | bash -s -- update 8110 1.0.5
+#   { curl -fsSL https://raw.githubusercontent.com/Qcby/QcbyScript/code/install.sh || curl -fsSL https://cdn.jsdelivr.net/gh/Qcby/QcbyScript@code/install.sh; } | bash
+#   { curl -fsSL https://raw.githubusercontent.com/Qcby/QcbyScript/code/install.sh || curl -fsSL https://cdn.jsdelivr.net/gh/Qcby/QcbyScript@code/install.sh; } | bash -s -- install 8110 latest
+#   { curl -fsSL https://raw.githubusercontent.com/Qcby/QcbyScript/code/install.sh || curl -fsSL https://cdn.jsdelivr.net/gh/Qcby/QcbyScript@code/install.sh; } | bash -s -- update 8110 1.0.5
 #
 # 环境变量：
 #   IMAGE_TAG=latest         指定镜像版本
@@ -39,7 +39,9 @@ DEFAULT_HOST_PORT="8110"
 DEFAULT_IMAGE_TAG="${IMAGE_TAG:-latest}"
 MIRROR_URL="${MIRROR_URL:-https://docker.1ms.run}"
 PROJECT_URL="https://hub.docker.com/r/qcby/qcby-vxcode"
-SCRIPT_URL="https://raw.githubusercontent.com/Qcby/QcbyScript/code/install.sh"
+SCRIPT_PRIMARY_URL="https://raw.githubusercontent.com/Qcby/QcbyScript/code/install.sh"
+SCRIPT_FALLBACK_URL="https://cdn.jsdelivr.net/gh/Qcby/QcbyScript@code/install.sh"
+SCRIPT_URL="$SCRIPT_PRIMARY_URL"
 ADMIN_AUTH_FILE="/app/data/admin_auth.json"
 APP_PLATFORM="${APP_PLATFORM:-auto}"
 # ==================================================
@@ -94,7 +96,8 @@ usage() {
   cat <<EOF
 === Qcby VxCode 管理脚本 ===
 项目地址：$PROJECT_URL
-脚本地址：$SCRIPT_URL
+脚本地址：$SCRIPT_PRIMARY_URL
+备用地址：$SCRIPT_FALLBACK_URL
 镜像：$IMAGE_REPO:<版本>（latest 和版本号标签均支持多架构 AMD64 / ARM64）
 
 用法：
@@ -110,9 +113,9 @@ usage() {
   $SCRIPT_NAME help                        显示帮助
 
 一键命令：
-  curl -fsSL $SCRIPT_URL | bash                         # 打开交互菜单
-  curl -fsSL $SCRIPT_URL | bash -s -- install 8110 latest # 明确指定安装
-  curl -fsSL $SCRIPT_URL | bash -s -- update 8110 1.0.4
+  { curl -fsSL $SCRIPT_PRIMARY_URL || curl -fsSL $SCRIPT_FALLBACK_URL; } | bash
+  { curl -fsSL $SCRIPT_PRIMARY_URL || curl -fsSL $SCRIPT_FALLBACK_URL; } | bash -s -- install 8110 latest
+  { curl -fsSL $SCRIPT_PRIMARY_URL || curl -fsSL $SCRIPT_FALLBACK_URL; } | bash -s -- update 8110 1.0.4
 
 示例：
   bash $SCRIPT_NAME install
