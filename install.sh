@@ -11,7 +11,7 @@
 # 管道：
 #   curl -fsSL https://cdn.jsdelivr.net/gh/Qcby/QcbyScript/code/install.sh | bash                         # 打开交互菜单
 #   curl -fsSL https://cdn.jsdelivr.net/gh/Qcby/QcbyScript/code/install.sh | bash -s -- install 8110 latest # 明确指定安装
-#   curl -fsSL https://cdn.jsdelivr.net/gh/Qcby/QcbyScript/code/install.sh | bash -s -- update 8110 1.0.4
+#   curl -fsSL https://cdn.jsdelivr.net/gh/Qcby/QcbyScript/code/install.sh | bash -s -- update 8110 1.0.5
 #
 # 环境变量：
 #   IMAGE_TAG=latest         指定镜像版本
