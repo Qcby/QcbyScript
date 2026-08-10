@@ -9,9 +9,9 @@
 #   bash install.sh status|address|logs|restart|reset-password|help
 #
 # 管道：
-#   curl -fsSL https://cdn.jsdelivr.net/gh/Qcby/QcbyScript/code/install.sh | bash                         # 打开交互菜单
-#   curl -fsSL https://cdn.jsdelivr.net/gh/Qcby/QcbyScript/code/install.sh | bash -s -- install 8110 latest # 明确指定安装
-#   curl -fsSL https://cdn.jsdelivr.net/gh/Qcby/QcbyScript/code/install.sh | bash -s -- update 8110 1.0.5
+#   curl -fsSL https://raw.githubusercontent.com/Qcby/QcbyScript/code/install.sh | bash                         # 打开交互菜单
+#   curl -fsSL https://raw.githubusercontent.com/Qcby/QcbyScript/code/install.sh | bash -s -- install 8110 latest # 明确指定安装
+#   curl -fsSL https://raw.githubusercontent.com/Qcby/QcbyScript/code/install.sh | bash -s -- update 8110 1.0.5
 #
 # 环境变量：
 #   IMAGE_TAG=latest         指定镜像版本
@@ -39,7 +39,7 @@ DEFAULT_HOST_PORT="8110"
 DEFAULT_IMAGE_TAG="${IMAGE_TAG:-latest}"
 MIRROR_URL="${MIRROR_URL:-https://docker.1ms.run}"
 PROJECT_URL="https://hub.docker.com/r/qcby/qcby-vxcode"
-SCRIPT_URL="https://cdn.jsdelivr.net/gh/Qcby/QcbyScript/code/install.sh"
+SCRIPT_URL="https://raw.githubusercontent.com/Qcby/QcbyScript/code/install.sh"
 ADMIN_AUTH_FILE="/app/data/admin_auth.json"
 APP_PLATFORM="${APP_PLATFORM:-auto}"
 # ==================================================
@@ -76,7 +76,18 @@ prompt_read() {
 }
 
 run_docker() {
-  "${DOCKER_PREFIX[@]}" "$DOCKER_BIN" "$@"
+  if [ "${#DOCKER_PREFIX[@]}" -gt 0 ]; then
+    "${DOCKER_PREFIX[@]}" "$DOCKER_BIN" "$@"
+  else
+    "$DOCKER_BIN" "$@"
+  fi
+}
+
+app_platform_args() {
+  if [ "${#APP_PLATFORM_ARGS[@]}" -gt 0 ]; then
+    printf '%s\n' "${APP_PLATFORM_ARGS[@]}"
+  fi
+  return 0
 }
 
 usage() {
@@ -334,7 +345,7 @@ resolve_app_platform() {
 }
 
 show_amd64_binfmt_hint() {
-  if printf '%s\n' "${APP_PLATFORM_ARGS[@]:-}" | grep -Fxq "linux/amd64"; then
+  if app_platform_args | grep -Fxq "linux/amd64"; then
     warn "如果日志中出现 exec format error，说明当前 ARM 主机尚未启用 amd64 仿真支持。"
     warn "请先执行：docker run --privileged --rm tonistiigi/binfmt --install amd64"
     warn "然后重新运行：bash $SCRIPT_NAME update ${HOST_PORT:-$DEFAULT_HOST_PORT} ${IMAGE_TAG:-$DEFAULT_IMAGE_TAG}"
@@ -582,7 +593,11 @@ EOF
 pull_images() {
   resolve_app_platform
   info "拉取业务镜像：$IMAGE_REPO:$IMAGE_TAG"
-  run_docker pull "${APP_PLATFORM_ARGS[@]}" "$IMAGE_REPO:$IMAGE_TAG"
+  if [ "${#APP_PLATFORM_ARGS[@]}" -gt 0 ]; then
+    run_docker pull "${APP_PLATFORM_ARGS[@]}" "$IMAGE_REPO:$IMAGE_TAG"
+  else
+    run_docker pull "$IMAGE_REPO:$IMAGE_TAG"
+  fi
   info "拉取 Redis 镜像：$REDIS_IMAGE"
   run_docker pull "$REDIS_IMAGE"
 }
@@ -657,15 +672,20 @@ start_app() {
   fi
 
   info "启动业务容器：$APP_NAME"
-  if ! run_docker run -d \
-    "${APP_PLATFORM_ARGS[@]}" \
-    --name "$APP_NAME" \
-    --network "$NETWORK_NAME" \
-    -p "$HOST_PORT:$CONTAINER_PORT" \
-    "${COMMON_MOUNT_ARGS[@]}" \
-    "${env_args[@]}" \
-    --restart always \
-    "$IMAGE_REPO:$IMAGE_TAG" >/dev/null; then
+  local docker_run_args=(run -d)
+  if [ "${#APP_PLATFORM_ARGS[@]}" -gt 0 ]; then
+    docker_run_args+=("${APP_PLATFORM_ARGS[@]}")
+  fi
+  docker_run_args+=(
+    --name "$APP_NAME"
+    --network "$NETWORK_NAME"
+    -p "$HOST_PORT:$CONTAINER_PORT"
+    "${COMMON_MOUNT_ARGS[@]}"
+    "${env_args[@]}"
+    --restart always
+    "$IMAGE_REPO:$IMAGE_TAG"
+  )
+  if ! run_docker "${docker_run_args[@]}" >/dev/null; then
     err "业务容器启动失败：$APP_NAME"
     show_amd64_binfmt_hint
     exit 1
