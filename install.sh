@@ -21,6 +21,7 @@
 #   USE_MIRROR=1            配置 Docker registry mirror（默认不改 Docker 配置）
 #   MIRROR_URL=https://docker.1ms.run
 #   REDIS_PASSWORD=xxx      为 Redis 设置密码并传给业务容器
+#   APP_PLATFORM=auto       业务容器平台；auto 时 ARM 主机默认 linux/amd64 以兼容现有 x86_64 libv08.so
 #   NO_AUTO_INSTALL_DOCKER=1 禁止自动安装 Docker
 
 set -Eeuo pipefail
@@ -40,6 +41,7 @@ MIRROR_URL="${MIRROR_URL:-https://docker.1ms.run}"
 PROJECT_URL="https://hub.docker.com/r/qcby/qcby-vxcode"
 SCRIPT_URL="https://cdn.jsdelivr.net/gh/Qcby/QcbyScript@code/install.sh"
 ADMIN_AUTH_FILE="/app/data/admin_auth.json"
+APP_PLATFORM="${APP_PLATFORM:-auto}"
 # ==================================================
 
 SCRIPT_NAME="${0##*/}"
@@ -108,7 +110,12 @@ usage() {
   bash $SCRIPT_NAME uninstall --purge
 
 环境变量：
-  HOST_PORT=8110 IMAGE_TAG=latest YES=1 USE_MIRROR=0 DELETE_VOLUMES=0 REDIS_PASSWORD=xxx
+  HOST_PORT=8110 IMAGE_TAG=latest YES=1 USE_MIRROR=0 DELETE_VOLUMES=0 REDIS_PASSWORD=xxx APP_PLATFORM=auto
+
+ARM 兼容说明：
+  当前普通取码依赖 x86_64 libv08.so。APP_PLATFORM=auto 时，脚本会在 ARM/aarch64 主机上
+  自动让业务容器使用 linux/amd64 仿真运行；Redis 仍使用宿主机原生架构。
+  如已替换 ARM64 原生 libv08.so，可使用 APP_PLATFORM=none 关闭平台指定。
 EOF
 }
 
@@ -262,6 +269,47 @@ choose_image_tag() {
   if ! valid_tag "$IMAGE_TAG"; then
     err "镜像版本标签无效：$IMAGE_TAG"
     exit 1
+  fi
+}
+
+resolve_app_platform() {
+  # 业务容器需要兼容现有 x86_64 libv08.so。Redis 不使用该平台参数，保持原生架构运行。
+  APP_PLATFORM_ARGS=()
+  case "${APP_PLATFORM:-auto}" in
+    ""|none|native|0|false|FALSE)
+      info "业务容器平台：宿主机原生架构"
+      return 0
+      ;;
+    auto)
+      local arch=""
+      arch="$(uname -m 2>/dev/null || true)"
+      case "$arch" in
+        aarch64|arm64|armv7l|armv6l)
+          APP_PLATFORM_ARGS=(--platform linux/amd64)
+          warn "检测到 ARM 主机（$arch），业务容器将使用 linux/amd64 仿真以兼容现有 libv08.so。"
+          warn "如启动时报 exec format error，请先执行：docker run --privileged --rm tonistiigi/binfmt --install amd64"
+          ;;
+        *)
+          info "业务容器平台：宿主机原生架构（$arch）"
+          ;;
+      esac
+      ;;
+    linux/amd64|linux/arm64|linux/arm/v7)
+      APP_PLATFORM_ARGS=(--platform "$APP_PLATFORM")
+      info "业务容器平台：$APP_PLATFORM"
+      ;;
+    *)
+      err "APP_PLATFORM 无效：$APP_PLATFORM（可选 auto、none、linux/amd64、linux/arm64、linux/arm/v7）"
+      exit 1
+      ;;
+  esac
+}
+
+show_amd64_binfmt_hint() {
+  if printf '%s\n' "${APP_PLATFORM_ARGS[@]:-}" | grep -Fxq "linux/amd64"; then
+    warn "如果日志中出现 exec format error，说明当前 ARM 主机尚未启用 amd64 仿真支持。"
+    warn "请先执行：docker run --privileged --rm tonistiigi/binfmt --install amd64"
+    warn "然后重新运行：bash $SCRIPT_NAME update ${HOST_PORT:-$DEFAULT_HOST_PORT} ${IMAGE_TAG:-$DEFAULT_IMAGE_TAG}"
   fi
 }
 
@@ -504,8 +552,9 @@ EOF
 }
 
 pull_images() {
+  resolve_app_platform
   info "拉取业务镜像：$IMAGE_REPO:$IMAGE_TAG"
-  run_docker pull "$IMAGE_REPO:$IMAGE_TAG"
+  run_docker pull "${APP_PLATFORM_ARGS[@]}" "$IMAGE_REPO:$IMAGE_TAG"
   info "拉取 Redis 镜像：$REDIS_IMAGE"
   run_docker pull "$REDIS_IMAGE"
 }
@@ -580,14 +629,19 @@ start_app() {
   fi
 
   info "启动业务容器：$APP_NAME"
-  run_docker run -d \
+  if ! run_docker run -d \
+    "${APP_PLATFORM_ARGS[@]}" \
     --name "$APP_NAME" \
     --network "$NETWORK_NAME" \
     -p "$HOST_PORT:$CONTAINER_PORT" \
     "${COMMON_MOUNT_ARGS[@]}" \
     "${env_args[@]}" \
     --restart always \
-    "$IMAGE_REPO:$IMAGE_TAG" >/dev/null
+    "$IMAGE_REPO:$IMAGE_TAG" >/dev/null; then
+    err "业务容器启动失败：$APP_NAME"
+    show_amd64_binfmt_hint
+    exit 1
+  fi
 }
 
 get_public_ip() {
@@ -819,5 +873,3 @@ main() {
 }
 
 main "$@"
-
-
