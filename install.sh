@@ -591,7 +591,6 @@ EOF
 }
 
 pull_images() {
-  resolve_app_platform
   info "拉取业务镜像：$IMAGE_REPO:$IMAGE_TAG"
   if [ "${#APP_PLATFORM_ARGS[@]}" -gt 0 ]; then
     run_docker pull "${APP_PLATFORM_ARGS[@]}" "$IMAGE_REPO:$IMAGE_TAG"
@@ -762,6 +761,7 @@ install_app() {
   choose_image_tag "$(positional_arg 2)"
   info "访问端口：$HOST_PORT"
   info "镜像版本：$IMAGE_TAG"
+  resolve_app_platform
   confirm_notice
   ensure_docker
   configure_docker_mirror
@@ -783,6 +783,7 @@ update_app() {
   choose_image_tag "$(positional_arg 2)"
   info "访问端口：$HOST_PORT"
   info "镜像版本：$IMAGE_TAG"
+  resolve_app_platform
   confirm_notice
   ensure_docker
   configure_docker_mirror
