@@ -21,7 +21,7 @@
 #   USE_MIRROR=1            配置 Docker registry mirror（默认不改 Docker 配置）
 #   MIRROR_URL=https://docker.1ms.run
 #   REDIS_PASSWORD=xxx      为 Redis 设置密码并传给业务容器
-#   APP_PLATFORM=auto       业务容器平台；auto 时 ARM 主机默认 linux/amd64 以兼容现有 x86_64 libv08.so
+#   APP_PLATFORM=auto       业务容器平台；auto 时 ARM 主机可选择 AMD64 仿真或 ARM 原生安装
 #   NO_AUTO_INSTALL_DOCKER=1 禁止自动安装 Docker
 
 set -Eeuo pipefail
@@ -113,9 +113,11 @@ usage() {
   HOST_PORT=8110 IMAGE_TAG=latest YES=1 USE_MIRROR=0 DELETE_VOLUMES=0 REDIS_PASSWORD=xxx APP_PLATFORM=auto
 
 ARM 兼容说明：
-  当前普通取码依赖 x86_64 libv08.so。APP_PLATFORM=auto 时，脚本会在 ARM/aarch64 主机上
-  自动让业务容器使用 linux/amd64 仿真运行；Redis 仍使用宿主机原生架构。
-  如已替换 ARM64 原生 libv08.so，可使用 APP_PLATFORM=none 关闭平台指定。
+  APP_PLATFORM=auto 时，脚本会在 ARM/aarch64 主机上提供两种安装方式：
+  1) AMD64 仿真安装：完整功能，支持 CAR 等功能。
+  2) ARM 原生安装：仅支持 YYB 功能。
+  无交互终端时默认使用 AMD64 仿真安装；Redis 始终使用宿主机原生架构。
+  也可用 APP_PLATFORM=linux/amd64、linux/arm64 或 none 明确指定。
 EOF
 }
 
@@ -273,7 +275,7 @@ choose_image_tag() {
 }
 
 resolve_app_platform() {
-  # 业务容器需要兼容现有 x86_64 libv08.so。Redis 不使用该平台参数，保持原生架构运行。
+  # Redis 不使用该平台参数，始终保持宿主机原生架构运行。
   APP_PLATFORM_ARGS=()
   case "${APP_PLATFORM:-auto}" in
     ""|none|native|0|false|FALSE)
@@ -285,9 +287,35 @@ resolve_app_platform() {
       arch="$(uname -m 2>/dev/null || true)"
       case "$arch" in
         aarch64|arm64|armv7l|armv6l)
-          APP_PLATFORM_ARGS=(--platform linux/amd64)
-          warn "检测到 ARM 主机（$arch），业务容器将使用 linux/amd64 仿真以兼容现有 libv08.so。"
-          warn "如启动时报 exec format error，请先执行：docker run --privileged --rm tonistiigi/binfmt --install amd64"
+          warn "检测到 ARM 主机（$arch），请选择业务容器安装方式："
+          echo "  1) AMD64 仿真安装：完整功能，支持 CAR 等功能"
+          echo "  2) ARM 原生安装：仅支持 YYB 功能"
+          if is_tty; then
+            while true; do
+              printf "输入数字 [1-2]（默认 1）: "
+              prompt_read platform_choice
+              case "${platform_choice:-1}" in
+                1)
+                  APP_PLATFORM_ARGS=(--platform linux/amd64)
+                  warn "已选择 AMD64 仿真安装：完整功能，支持 CAR 等功能。"
+                  warn "如启动时报 exec format error，请先执行：docker run --privileged --rm tonistiigi/binfmt --install amd64"
+                  break
+                  ;;
+                2)
+                  APP_PLATFORM_ARGS=()
+                  warn "已选择 ARM 原生安装：仅支持 YYB 功能。"
+                  break
+                  ;;
+                *)
+                  err "无效选择，请输入 1 或 2。"
+                  ;;
+              esac
+            done
+          else
+            APP_PLATFORM_ARGS=(--platform linux/amd64)
+            warn "未检测到可交互终端，默认使用 AMD64 仿真安装：完整功能，支持 CAR 等功能。"
+            warn "如启动时报 exec format error，请先执行：docker run --privileged --rm tonistiigi/binfmt --install amd64"
+          fi
           ;;
         *)
           info "业务容器平台：宿主机原生架构（$arch）"
