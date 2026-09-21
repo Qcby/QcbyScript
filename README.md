@@ -7,6 +7,7 @@
 ```text
 CodeScript/      需要 wx_server_url / mywc 获取小程序 code 的脚本
 RegularScript/   不需要 code 服务的普通脚本
+ql-skill/   规范化Code脚本Skill(用于自行将其他脚本接口规范成mywc)
 ```
 
 ## 【使用须知 / 免责声明】
